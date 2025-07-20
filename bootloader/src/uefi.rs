@@ -5,9 +5,11 @@ use core::ptr::null_mut;
 
 pub mod graphics;
 pub mod memory;
+pub mod text;
 pub mod types;
 use crate::memory_map_holder::MemoryMapHolder;
 use graphics::*;
+use text::EfiSimpleTextOutputProtocol;
 use types::*;
 
 #[repr(C)]
@@ -56,6 +58,24 @@ impl EfiBootServicesTable {
             &mut map.descriptor_version,
         )
     }
+
+    pub fn open_protocol(
+        &self,
+        handle: EfiHandle,
+        protocol: *const EfiGuid,
+        interface: *mut *mut EfiVoid,
+        agent_handle: EfiHandle,
+        controller_handle: EfiHandle,
+    ) -> EfiStatus {
+        (self.open_protocol)(
+            handle,
+            protocol,
+            interface,
+            agent_handle,
+            controller_handle,
+            EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL,
+        )
+    }
 }
 
 #[repr(C)]
@@ -77,26 +97,6 @@ impl EfiSystemTable {
 
 const _: () = assert!(offset_of!(EfiSystemTable, boot_services) == 96);
 
-#[repr(C)]
-pub struct EfiSimpleTextOutputProtocol {
-    reset: EfiHandle,
-    output_string:
-        extern "win64" fn(this: *const EfiSimpleTextOutputProtocol, str: *const u16) -> EfiStatus,
-    test_string: EfiHandle,
-    query_mode: EfiHandle,
-    set_mode: EfiHandle,
-    set_attribute: EfiHandle,
-    clear_screen: extern "win64" fn(this: *const EfiSimpleTextOutputProtocol) -> EfiStatus,
-    //
-    _pinned: PhantomPinned,
-}
-
-impl EfiSimpleTextOutputProtocol {
-    pub fn clear_screen(&self) -> Result<()> {
-        (self.clear_screen)(self).into_result()
-    }
-}
-
 // https://github.com/tianocore/edk2/blob/562bce0febd641f78df7cd61f2ed5a4c944b31ac/MdePkg/Include/Protocol/LoadedImage.h#L43
 #[repr(C)]
 #[derive(Debug)]
@@ -107,54 +107,19 @@ pub struct EfiLoadedImageProtocol {
 }
 const _: () = assert!(offset_of!(EfiLoadedImageProtocol, device_handle) == 24);
 
-pub struct EfiSimpleTextOutputProtocolWriter<'a> {
-    pub protocol: &'a EfiSimpleTextOutputProtocol,
-    //
-    _pinned: PhantomPinned,
-}
-
-impl<'a> EfiSimpleTextOutputProtocolWriter<'a> {
-    pub fn new(protocol: &'a EfiSimpleTextOutputProtocol) -> Self {
-        EfiSimpleTextOutputProtocolWriter {
-            protocol,
-            _pinned: PhantomPinned,
-        }
-    }
-}
-
-impl EfiSimpleTextOutputProtocolWriter<'_> {
-    pub fn write_char(&mut self, c: u8) {
-        let cbuf: [u16; 2] = [c.into(), 0];
-        (self.protocol.output_string)(self.protocol, cbuf.as_ptr())
-            .into_result()
-            .unwrap();
-    }
-    pub fn write_str(&mut self, s: &str) {
-        for c in s.bytes() {
-            if c == b'\n' {
-                self.write_char(b'\r');
-            }
-            self.write_char(c);
-        }
-    }
-}
-
-impl fmt::Write for EfiSimpleTextOutputProtocolWriter<'_> {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.write_str(s);
-        Ok(())
-    }
-}
-
 // GUID SIMPLE FILE SYSTEM PROTOCOLの実装
 #[repr(C)]
 #[derive(Debug)]
 pub struct EfiSimpleFileSystemProtocol {
     pub revision: u64,
-    pub open_volume: extern "win64" fn(
-        this: *mut EfiSimpleFileSystemProtocol,
-        root: *mut *mut EfiFileProtocol,
-    ) -> EfiStatus,
+    pub open_volume:
+        extern "win64" fn(this: *const Self, root: *mut *mut EfiFileProtocol) -> EfiStatus,
+}
+
+impl EfiSimpleFileSystemProtocol {
+    pub fn open_volume(&self, root: *mut *mut EfiFileProtocol) -> EfiStatus {
+        (self.open_volume)(self as *const Self, root)
+    }
 }
 
 #[repr(C)]
@@ -176,6 +141,50 @@ pub struct EfiFileProtocol {
         buffer: *mut u8,
     ) -> EfiStatus,
     _reserved1: [u64; 9],
+}
+impl EfiFileProtocol {
+    pub fn open(
+        &self,
+        new_handle: *mut *mut EfiFileProtocol,
+        file_name: &[u16],
+        open_mode: u64,
+        attributes: u64,
+    ) -> EfiStatus {
+        (self.open)(
+            self as *const _ as *mut EfiFileProtocol,
+            new_handle,
+            file_name.as_ptr(),
+            open_mode,
+            attributes,
+        )
+    }
+
+    pub fn close(&self) -> EfiStatus {
+        (self.close)(self as *const _ as *mut EfiFileProtocol)
+    }
+    pub fn write_char(&self, c: u8) -> EfiStatus {
+        (self.write)(
+            self as *const _ as *mut EfiFileProtocol,
+            &mut 1,                     // 書き込むバイト数
+            &c as *const u8 as *mut u8, // 書き込むバッファのポインタ
+        )
+    }
+
+    pub fn write_str(&self, s: &str) -> EfiStatus {
+        for c in s.bytes() {
+            if c == b'\n' {
+                let status = self.write_char(b'\r');
+                if status != EfiStatus::Success {
+                    return status; // 改行文字の書き込みに失敗した場合は、エラーを返す
+                }
+            }
+            let status = self.write_char(c);
+            if status != EfiStatus::Success {
+                return status;
+            }
+        }
+        EfiStatus::Success
+    }
 }
 
 // locate_protocolのオフセットを確認するためのアサーション(オフセットは、バイトで計算する)
@@ -200,42 +209,4 @@ pub fn locate_graphic_protocol<'a>(
         return Err(Error::Failed("Failed to locate graphics output protocol"));
     }
     Ok(unsafe { &*graphic_output_protocol })
-}
-
-pub fn open_root_dir(
-    image_handle: EfiHandle,
-    root: &mut *mut EfiFileProtocol,
-    efi_system_table: &EfiSystemTable,
-) -> EfiStatus {
-    let mut loaded_image: *mut EfiLoadedImageProtocol = null_mut::<EfiLoadedImageProtocol>();
-    let mut fs: *mut EfiSimpleFileSystemProtocol = null_mut::<EfiSimpleFileSystemProtocol>();
-
-    // OpenProtocolを呼び出して、loaded_imageとfsを取得
-    let status = ((efi_system_table.boot_services.open_protocol)(
-        image_handle,
-        &EFI_LOADED_IMAGE_PROTOCOL_GUID,
-        &mut loaded_image as *mut *mut EfiLoadedImageProtocol as *mut *mut EfiVoid,
-        image_handle,
-        null_mut::<u64>() as u64,
-        EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL,
-    ));
-    if status != EfiStatus::Success {
-        return status;
-    }
-    let status = ((efi_system_table.boot_services.open_protocol)(
-        loaded_image as u64,
-        &EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID,
-        &mut fs as *mut *mut EfiSimpleFileSystemProtocol as *mut *mut EfiVoid,
-        image_handle,
-        null_mut::<u64>() as u64,
-        EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL,
-    ));
-    if status != EfiStatus::Success {
-        return status;
-    }
-
-    // open_volumeを呼び出して、ルートディレクトリを取得
-    let status = unsafe { ((*fs).open_volume)(fs, root as *mut *mut EfiFileProtocol) };
-
-    status
 }

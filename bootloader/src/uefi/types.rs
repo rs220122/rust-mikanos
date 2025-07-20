@@ -15,7 +15,6 @@ impl From<EfiStatus> for Error {
 }
 pub type Result<T> = core::result::Result<T, Error>;
 
-
 // https://github.com/tianocore/edk2/blob/562bce0febd641f78df7cd61f2ed5a4c944b31ac/MdePkg/Include/Uefi/UefiSpec.h#L1351C9-L1351C58
 pub const EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL: u32 = 00000001; // OpenProtocolの属性
 
@@ -64,6 +63,13 @@ impl EfiStatus {
             Ok(())
         } else {
             Err(self.into())
+        }
+    }
+
+    pub fn to_string(self) -> &'static str {
+        match self {
+            EfiStatus::Success => "Success",
+            _ => "Unknown status",
         }
     }
 }
