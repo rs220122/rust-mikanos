@@ -27,3 +27,4 @@ disk.img
 # Added by cargo
 
 /target
+kernel/kernel.elf

@@ -1,10 +1,11 @@
 #![no_std]
 #![no_main]
+
 use core::arch::asm;
 use core::panic::PanicInfo;
 
 #[unsafe(no_mangle)]
-pub extern "C" fn KernelMain() {
+extern "C" fn KernelMain() {
     loop {
         unsafe {
             asm!("hlt");
