@@ -41,6 +41,12 @@ pub const EFI_LOADED_IMAGE_PROTOCOL_GUID: EfiGuid = EfiGuid {
     data2: 0x11d2,
     data3: [0x8e, 0x3f, 0x00, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
 };
+pub const EFI_FILE_INFO_GUID: EfiGuid = EfiGuid {
+    data0: 0x9576e92,
+    data1: 0x6d3f,
+    data2: 0x11d2,
+    data3: [0x8e, 0x39, 0x0, 0xa0, 0xc9, 0x69, 0x72, 0x3b],
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,4 +78,29 @@ impl EfiStatus {
             _ => "Unknown status",
         }
     }
+}
+
+#[repr(C)]
+#[allow(dead_code)]
+#[derive(Default, Debug)]
+pub struct EfiTime {
+    year: u16,  // 1900 – 9999
+    month: u8,  // 1 – 12
+    day: u8,    // 1 – 31
+    hour: u8,   // 0 – 23
+    minute: u8, // 0 – 59
+    second: u8, // 0 – 59
+    pad1: u8,
+    nanosecond: u32, // 0 – 999,999,999
+    time_zone: u16,  // -1440 to 1440 or 2047
+    daylight: u8,
+    pad2: u8,
+}
+
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[repr(i32)]
+pub enum EfiLocateSearchType {
+    AllHandles = 0,
+    ByRegisterNotify,
+    ByProtocol,
 }

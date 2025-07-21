@@ -1,20 +1,30 @@
-use core::fmt;
-use core::marker::PhantomPinned;
-use core::mem::offset_of;
-use core::ptr::null_mut;
-
+pub mod file;
 pub mod graphics;
 pub mod memory;
 pub mod text;
 pub mod types;
+
+use core::marker::PhantomPinned;
+use core::mem::offset_of;
+use core::ptr::null_mut;
+
 use crate::memory_map_holder::MemoryMapHolder;
+use crate::uefi::memory::{EfiAllocateType, EfiMemoryType};
 use graphics::*;
 use text::EfiSimpleTextOutputProtocol;
 use types::*;
 
+// https://github.com/tianocore/edk2/blob/8216419a02173421ce7070268fdd11a7caadfa4b/MdePkg/Include/Uefi/UefiSpec.h#L2021
 #[repr(C)]
 pub struct EfiBootServicesTable {
-    _reserved0: [u64; 7],
+    _reserved0: [u64; 5],
+    allocate_pages: extern "win64" fn(
+        allocate_type: EfiAllocateType,
+        memory_type: EfiMemoryType,
+        pages: usize,
+        memory: *mut u64,
+    ) -> EfiStatus,
+    _reserved1: [u64; 1],
     get_memory_map: extern "win64" fn(
         // メモリマップを書き込む用のバッファのサイズを設定。小さすぎるとエラーとなる。
         memory_map_size: *mut usize,
@@ -29,7 +39,11 @@ pub struct EfiBootServicesTable {
         // メモリディスクリプタの構造体のバージョン番号を表す. not used in this implementation
         descriptor_version: *mut u32,
     ) -> EfiStatus,
-    _reserved1: [u64; 27],
+    _reserved2: [u64; 1],
+    free_pool: extern "win64" fn(buffer: *mut EfiVoid) -> EfiStatus,
+    _reserved3: [u64; 19],
+    exit_boot_services: extern "win64" fn(image_handle: EfiHandle, map_key: usize) -> EfiStatus,
+    _reserved4: [u64; 5],
     // https://github.com/tianocore/edk2/blob/562bce0febd641f78df7cd61f2ed5a4c944b31ac/MdePkg/Include/Uefi/UefiSpec.h#L2021
     open_protocol: extern "win64" fn(
         handle: EfiHandle,
@@ -39,7 +53,14 @@ pub struct EfiBootServicesTable {
         controller_handle: EfiHandle,
         attributes: u32,
     ) -> EfiStatus,
-    _reserved2: [u64; 4],
+    _reserved5: [u64; 3],
+    locate_handle_buffer: extern "win64" fn(
+        search_type: EfiLocateSearchType,
+        protocol: *const EfiGuid,
+        search_key: *const EfiVoid,
+        no_handles: *mut usize,
+        buffer: *mut *mut EfiHandle,
+    ) -> EfiStatus,
     locate_protocol: extern "win64" fn(
         protocol: *const EfiGuid,
         registration: *const EfiVoid,
@@ -59,6 +80,33 @@ impl EfiBootServicesTable {
         )
     }
 
+    pub fn allocate_pages(&self, pages: usize, memory: *mut u64) -> EfiStatus {
+        (self.allocate_pages)(
+            EfiAllocateType::AllocateAddress,
+            EfiMemoryType::LOADER_DATA,
+            pages,
+            memory,
+        )
+    }
+
+    pub fn free_pool(&self, buffer: *mut EfiVoid) -> EfiStatus {
+        (self.free_pool)(buffer)
+    }
+    pub fn locate_handle_buffer(
+        &self,
+        search_key: EfiLocateSearchType,
+        protocol: *const EfiGuid,
+        no_handles: *mut usize,
+        buffer: *mut *mut EfiHandle,
+    ) -> EfiStatus {
+        (self.locate_handle_buffer)(
+            search_key,
+            protocol,
+            null_mut::<EfiVoid>(),
+            no_handles,
+            buffer,
+        )
+    }
     pub fn open_protocol(
         &self,
         handle: EfiHandle,
@@ -76,8 +124,13 @@ impl EfiBootServicesTable {
             EFI_OPEN_PROTOCOL_BY_HANDLE_PROTOCOL,
         )
     }
+
+    pub fn exit_boot_services(&self, handle: EfiHandle, map_key: usize) -> EfiStatus {
+        (self.exit_boot_services)(handle, map_key)
+    }
 }
 
+// https://uefi.org/specs/UEFI/2.10/04_EFI_System_Table.html#id6
 #[repr(C)]
 pub struct EfiSystemTable {
     _header: [u64; 3],
@@ -107,106 +160,41 @@ pub struct EfiLoadedImageProtocol {
 }
 const _: () = assert!(offset_of!(EfiLoadedImageProtocol, device_handle) == 24);
 
-// GUID SIMPLE FILE SYSTEM PROTOCOLの実装
-#[repr(C)]
-#[derive(Debug)]
-pub struct EfiSimpleFileSystemProtocol {
-    pub revision: u64,
-    pub open_volume:
-        extern "win64" fn(this: *const Self, root: *mut *mut EfiFileProtocol) -> EfiStatus,
-}
-
-impl EfiSimpleFileSystemProtocol {
-    pub fn open_volume(&self, root: *mut *mut EfiFileProtocol) -> EfiStatus {
-        (self.open_volume)(self as *const Self, root)
-    }
-}
-
-#[repr(C)]
-#[derive(Debug)]
-pub struct EfiFileProtocol {
-    pub revision: u64,
-    pub open: extern "win64" fn(
-        this: *mut EfiFileProtocol,
-        new_handle: *mut *mut EfiFileProtocol,
-        file_name: *const u16,
-        open_mode: u64,
-        attributes: u64,
-    ) -> EfiStatus,
-    pub close: extern "win64" fn(this: *mut EfiFileProtocol) -> EfiStatus,
-    _reserved0: [u64; 2],
-    pub write: extern "win64" fn(
-        this: *mut EfiFileProtocol,
-        buffer_size: *mut usize,
-        buffer: *mut u8,
-    ) -> EfiStatus,
-    _reserved1: [u64; 9],
-}
-impl EfiFileProtocol {
-    pub fn open(
-        &self,
-        new_handle: *mut *mut EfiFileProtocol,
-        file_name: &[u16],
-        open_mode: u64,
-        attributes: u64,
-    ) -> EfiStatus {
-        (self.open)(
-            self as *const _ as *mut EfiFileProtocol,
-            new_handle,
-            file_name.as_ptr(),
-            open_mode,
-            attributes,
-        )
-    }
-
-    pub fn close(&self) -> EfiStatus {
-        (self.close)(self as *const _ as *mut EfiFileProtocol)
-    }
-    pub fn write_char(&self, c: u8) -> EfiStatus {
-        (self.write)(
-            self as *const _ as *mut EfiFileProtocol,
-            &mut 1,                     // 書き込むバイト数
-            &c as *const u8 as *mut u8, // 書き込むバッファのポインタ
-        )
-    }
-
-    pub fn write_str(&self, s: &str) -> EfiStatus {
-        for c in s.bytes() {
-            if c == b'\n' {
-                let status = self.write_char(b'\r');
-                if status != EfiStatus::Success {
-                    return status; // 改行文字の書き込みに失敗した場合は、エラーを返す
-                }
-            }
-            let status = self.write_char(c);
-            if status != EfiStatus::Success {
-                return status;
-            }
-        }
-        EfiStatus::Success
-    }
-}
-
 // locate_protocolのオフセットを確認するためのアサーション(オフセットは、バイトで計算する)
 const _: () = assert!(offset_of!(EfiBootServicesTable, get_memory_map) == 56);
 const _: () = assert!(offset_of!(EfiBootServicesTable, locate_protocol) == 320);
-const _: () = assert!(offset_of!(EfiSimpleFileSystemProtocol, open_volume) == 8);
-const _: () = assert!(offset_of!(EfiFileProtocol, open) == 8);
-const _: () = assert!(offset_of!(EfiFileProtocol, close) == 16);
-const _: () = assert!(offset_of!(EfiFileProtocol, write) == 40);
 
-pub fn locate_graphic_protocol<'a>(
-    efi_system_table: &EfiSystemTable,
+pub fn open_gop<'a>(
+    image_handle: EfiHandle,
+    system_table: &EfiSystemTable,
 ) -> Result<&'a EfiGraphicsOutputProtocol<'a>> {
-    // 入れるためのポインタをnull_mutで初期化
     let mut graphic_output_protocol = null_mut::<EfiGraphicsOutputProtocol>();
-    let status = (efi_system_table.boot_services.locate_protocol)(
+    let mut num_gop_handles: usize = 0;
+    let mut gop_handles = null_mut::<EfiHandle>();
+
+    let status = system_table.boot_services.locate_handle_buffer(
+        EfiLocateSearchType::ByProtocol,
         &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
-        null_mut::<EfiVoid>(), // 登録はしないのでnull_mut
-        &mut graphic_output_protocol as *mut *mut EfiGraphicsOutputProtocol as *mut *mut EfiVoid,
+        &mut num_gop_handles as *mut usize,
+        &mut gop_handles as *mut *mut EfiHandle,
     );
     if status != EfiStatus::Success {
         return Err(Error::Failed("Failed to locate graphics output protocol"));
     }
+    let gop_handles_array = unsafe { core::slice::from_raw_parts(gop_handles, num_gop_handles) };
+
+    let status = system_table.boot_services.open_protocol(
+        gop_handles_array[0],
+        &EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID,
+        &mut graphic_output_protocol as *mut *mut EfiGraphicsOutputProtocol as *mut *mut EfiVoid,
+        image_handle,
+        null_mut::<u64>() as u64,
+    );
+    if status != EfiStatus::Success {
+        return Err(Error::Failed("Failed to open graphics output protocol"));
+    }
+
+    let _ = system_table.boot_services.free_pool(gop_handles as *mut u8);
+
     Ok(unsafe { &*graphic_output_protocol })
 }
