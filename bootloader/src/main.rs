@@ -4,6 +4,7 @@
 use core::arch::asm;
 
 use core::fmt::Write;
+use core::fmt::write;
 use core::mem::size_of;
 use core::panic::PanicInfo;
 use core::ptr::null_mut;
@@ -328,7 +329,8 @@ pub extern "C" fn efi_main(
         unsafe { core::slice::from_raw_parts_mut(phdr_addr as *mut ElfPhdr, phdr_bytes) };
 
     // プログラムを読み込む
-    for phdr in phdrs.iter() {
+    for i in 0..kernel_ehdr.e_phnum {
+        let phdr = phdrs[i as usize];
         if phdr.p_type != ElfPhdrType::PtLoad {
             continue;
         }

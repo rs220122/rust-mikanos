@@ -1,3 +1,5 @@
+use crate::font::font_A;
+
 pub enum PixelFormat {
     kPixelRGBResv8BitPerColor,
     kPixelBGRResv8BitPerColor,
@@ -16,6 +18,7 @@ pub trait PixelWriter<'a> {
         vertical_resolution: u32,
     ) -> Self;
     fn write_no_check(&mut self, x: u32, y: u32, c: &PixelColor) -> bool;
+    fn write_ascii(&mut self, x: u32, y: u32, c: u8, color: &PixelColor);
 }
 pub struct RGBResv8BitPerColorPixelWriter<'a> {
     frame_buffer: &'a mut [u8],
@@ -62,6 +65,20 @@ impl<'a> PixelWriter<'a> for RGBResv8BitPerColorPixelWriter<'a> {
 
         true
     }
+
+    fn write_ascii(&mut self, x: u32, y: u32, c: u8, color: &PixelColor) {
+        if c != ('A' as u8) {
+            return;
+        }
+
+        for (dy, font_a_bits) in font_A.iter().enumerate() {
+            for dx in 0..8usize {
+                if (font_a_bits << dx) & 0x80 != 0 {
+                    self.write_no_check(x + dx as u32, y + dy as u32, color);
+                }
+            }
+        }
+    }
 }
 
 impl<'a> PixelWriter<'a> for BGRResv8BitPerColorPixelWriter<'a> {
@@ -95,5 +112,19 @@ impl<'a> PixelWriter<'a> for BGRResv8BitPerColorPixelWriter<'a> {
         self.frame_buffer[pixel_at + 2] = c.r;
 
         true
+    }
+
+    fn write_ascii(&mut self, x: u32, y: u32, c: u8, color: &PixelColor) {
+        if c != ('A' as u8) {
+            return;
+        }
+
+        for (dy, font_a_bits) in font_A.iter().enumerate() {
+            for dx in 0..8usize {
+                if (font_a_bits << dx) & 0x80 != 0 {
+                    self.write_no_check(x + dx as u32, y + dy as u32, color);
+                }
+            }
+        }
     }
 }
