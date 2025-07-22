@@ -75,20 +75,16 @@ extern "win64" fn KernelMain(
         }
     }
     let color = PixelColor { r: 0, g: 0, b: 0 };
-    match &mut pixel_writer {
-        PixelWriterKind::RGB8(writer) => {
-            writer.write_ascii(50, 50, 65, &color);
-        }
-        PixelWriterKind::BGR8(writer) => {
-            writer.write_ascii(50, 50, 65, &color);
-        }
-    }
-    match &mut pixel_writer {
-        PixelWriterKind::RGB8(writer) => {
-            writer.write_ascii(58, 50, 'A' as u8, &color);
-        }
-        PixelWriterKind::BGR8(writer) => {
-            writer.write_ascii(58, 50, 'A' as u8, &color);
+    let a_int = '!' as u8;
+    let tilda_int = '~' as u8;
+    for (i, c) in (a_int..tilda_int).enumerate() {
+        match &mut pixel_writer {
+            PixelWriterKind::RGB8(writer) => {
+                writer.write_ascii(50 + (i as u32) * 8, 50, c, &color);
+            }
+            PixelWriterKind::BGR8(writer) => {
+                writer.write_ascii(50 + (i as u32) * 8, 50, c, &color);
+            }
         }
     }
 

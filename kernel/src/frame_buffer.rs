@@ -1,4 +1,4 @@
-use crate::font::font_A;
+use crate::font::get_font;
 
 pub enum PixelFormat {
     kPixelRGBResv8BitPerColor,
@@ -67,13 +67,14 @@ impl<'a> PixelWriter<'a> for RGBResv8BitPerColorPixelWriter<'a> {
     }
 
     fn write_ascii(&mut self, x: u32, y: u32, c: u8, color: &PixelColor) {
-        if c != ('A' as u8) {
+        let font = get_font(c);
+        if font.is_null() {
             return;
         }
-
-        for (dy, font_a_bits) in font_A.iter().enumerate() {
+        let font: &[u8; 16] = unsafe { core::mem::transmute(font) };
+        for (dy, font_bits) in font.iter().enumerate() {
             for dx in 0..8usize {
-                if (font_a_bits << dx) & 0x80 != 0 {
+                if (*font_bits << dx) & 0x80 != 0 {
                     self.write_no_check(x + dx as u32, y + dy as u32, color);
                 }
             }
@@ -115,13 +116,14 @@ impl<'a> PixelWriter<'a> for BGRResv8BitPerColorPixelWriter<'a> {
     }
 
     fn write_ascii(&mut self, x: u32, y: u32, c: u8, color: &PixelColor) {
-        if c != ('A' as u8) {
+        let font = get_font(c);
+        if font.is_null() {
             return;
         }
-
-        for (dy, font_a_bits) in font_A.iter().enumerate() {
+        let font: &[u8; 16] = unsafe { core::mem::transmute(font) };
+        for (dy, font_bits) in font.iter().enumerate() {
             for dx in 0..8usize {
-                if (font_a_bits << dx) & 0x80 != 0 {
+                if (*font_bits << dx) & 0x80 != 0 {
                     self.write_no_check(x + dx as u32, y + dy as u32, color);
                 }
             }
