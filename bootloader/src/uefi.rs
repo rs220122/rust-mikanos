@@ -39,7 +39,11 @@ pub struct EfiBootServicesTable {
         // メモリディスクリプタの構造体のバージョン番号を表す. not used in this implementation
         descriptor_version: *mut u32,
     ) -> EfiStatus,
-    _reserved2: [u64; 1],
+    allocate_pool: extern "win64" fn(
+        pool_type: EfiMemoryType,
+        size: usize,
+        buffer: *mut *mut EfiVoid,
+    ) -> EfiStatus,
     free_pool: extern "win64" fn(buffer: *mut EfiVoid) -> EfiStatus,
     _reserved3: [u64; 19],
     exit_boot_services: extern "win64" fn(image_handle: EfiHandle, map_key: usize) -> EfiStatus,
@@ -89,6 +93,14 @@ impl EfiBootServicesTable {
         )
     }
 
+    pub fn allocate_pool(
+        &self,
+        pool_type: EfiMemoryType,
+        size: usize,
+        buffer: *mut *mut EfiVoid,
+    ) -> EfiStatus {
+        (self.allocate_pool)(pool_type, size, buffer)
+    }
     pub fn free_pool(&self, buffer: *mut EfiVoid) -> EfiStatus {
         (self.free_pool)(buffer)
     }

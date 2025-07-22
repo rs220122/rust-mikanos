@@ -43,7 +43,7 @@ impl EfiGraphicsOutputProtocolPixelInfo {
 }
 
 #[repr(i32)]
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub enum EfiGraphicsPixelFormat {
     PixelRedGreenBlueReserved8BitPerColor = 0,
     PixelBlueGreenRedReserved8BitPerColor,

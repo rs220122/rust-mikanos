@@ -13,10 +13,14 @@ use core::writeln;
 // pub mod uefi;
 // mod uefi_alloc;
 
+use bootloader::elf::ElfEhdr;
+use bootloader::elf::ElfPhdr;
+use bootloader::elf::ElfPhdrType;
 use bootloader::memory_map_holder::MemoryMapHolder;
 use bootloader::stack::BufWriter;
 use bootloader::uefi::file::{EfiFileInfo, EfiFileProtocol, EfiSimpleFileSystemProtocol};
 use bootloader::uefi::graphics::EfiGraphicsOutputProtocol;
+use bootloader::uefi::memory::EfiMemoryType;
 use bootloader::uefi::open_gop;
 use bootloader::uefi::text::EfiSimpleTextOutputProtocolWriter;
 use bootloader::uefi::types::{
@@ -25,9 +29,9 @@ use bootloader::uefi::types::{
     EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID, EfiGuid, EfiHandle, EfiLocateSearchType, EfiStatus,
     EfiVoid, Error,
 };
-use bootloader::uefi::{EfiLoadedImageProtocol, EfiSystemTable, locate_graphic_protocol};
+use bootloader::uefi::{EfiLoadedImageProtocol, EfiSystemTable};
 
-type EntryPointType = extern "C" fn() -> ();
+type EntryPointType = extern "C" fn(usize, u32, u32, u32, i32) -> usize;
 const MEMMAP_PATH: &[u16; 12] = &[
     (b'\\' as u16),
     (b'm' as u16),
@@ -219,17 +223,6 @@ pub extern "C" fn efi_main(
     output_writer.write_str(buf_writer.as_str().unwrap());
     buf_writer.flush();
 
-    // フレームバッファの配列を獲得する。フレームバッファの一つのピクセルは、u32で表現される。
-    // そのため、vram_addrをu32のポインタにキャスト
-    let vram_byte_size: usize =
-        vertical_resolution as usize * pixels_per_scan_line as usize * 24usize;
-    let vram = unsafe {
-        slice::from_raw_parts_mut(vram_addr as *mut u32, vram_byte_size / size_of::<u32>())
-    };
-    for e in vram {
-        *e = 0xffffff;
-    }
-
     // メモリマップを取得
     let mut memory_map = MemoryMapHolder::new();
     let status = efi_system_table
@@ -298,33 +291,77 @@ pub extern "C" fn efi_main(
     output_writer.write_str("success to get information for kernel.elf\n");
     let file_info_buffer = unsafe { &*file_info_buffer };
     let mut kernel_file_size: usize = file_info_buffer.file_size as usize;
-    // writeln!(buf_writer, "file info: {file_info_buffer:?}");
-    // output_writer.write_str(buf_writer.as_str().expect(""));
 
     // カーネルを展開する場所を確保する。
-    let mut kernel_base_addr: u64 = 0x100000; // 展開する時の先頭アドレス
-    let num_of_pages = (kernel_file_size + 0xfff) / 0x1000;
-    let _ = writeln!(buf_writer, "number of pages for allocation: {num_of_pages}");
-    output_writer.write_str(buf_writer.as_str().expect(""));
+    let mut kernel_buffer = null_mut::<EfiVoid>();
+    let status = efi_system_table.boot_services.allocate_pool(
+        EfiMemoryType::LOADER_DATA,
+        kernel_file_size,
+        &mut kernel_buffer as *mut *mut EfiVoid,
+    );
+    if status != EfiStatus::Success {
+        output_writer.write_str("Failed to allocate pool");
+        panic!("Failed to allocate pool");
+    }
+    let status = kernel_file.read(&mut kernel_file_size, kernel_buffer);
+    if status != EfiStatus::Success {
+        output_writer.write_str("Failed to read kernel file to pool");
+        panic!("Failed to read kernel file to pool");
+    }
+
+    // 展開した最初の部分は、elf file headerなので、それを読み取る
+    let mut kernel_ehdr: &mut ElfEhdr = unsafe { &mut *(kernel_buffer as *mut ElfEhdr) };
+    let entry_point_addr = kernel_ehdr.e_entry;
+    let phdr_num = kernel_ehdr.e_phnum;
+    let _ = writeln!(
+        buf_writer,
+        "kernel entry point address: 0x{entry_point_addr:0>8X} program header num: {phdr_num}"
+    );
+    output_writer.write_str(buf_writer.as_str().unwrap());
     buf_writer.flush();
-    let status = efi_system_table.boot_services.allocate_pages(
-        (kernel_file_size + 0xfff) / 0x1000,
-        kernel_base_addr as *mut u64,
-    );
-    if status != EfiStatus::Success {
-        output_writer.write_str("Failed to allocate page for kernel\n");
-        panic!("Failed to allocate page for kernel {:?}", status);
+
+    let phdr_addr: usize = (kernel_ehdr as *mut _ as usize + kernel_ehdr.e_phoff as usize);
+    // プログラムヘッダーの配列を、プログラムヘッダーが書かれている先頭のアドレスから、読み込む。
+    // プログラムヘッダの個数は、e_phnum
+    let phdr_bytes = size_of::<ElfPhdr>() * kernel_ehdr.e_phnum as usize;
+    let mut phdrs =
+        unsafe { core::slice::from_raw_parts_mut(phdr_addr as *mut ElfPhdr, phdr_bytes) };
+
+    // プログラムを読み込む
+    for phdr in phdrs.iter() {
+        if phdr.p_type != ElfPhdrType::PtLoad {
+            continue;
+        }
+        // プログラムヘッダーが実際に書かれている場所は、ファイルの先頭アドレスから、offsetの位置に書かれている。
+        // これを読み込んで、virtual addr上に展開する。
+        let offset = phdr.p_offset as usize;
+        let mut vaddr = phdr.p_vaddr;
+        let memsz = phdr.p_memsz as usize;
+        let _ = writeln!(
+            buf_writer,
+            "Program Header: vaddr: 0x{vaddr:X}, mem size: 0x{memsz:X}"
+        );
+        let status = efi_system_table
+            .boot_services
+            .allocate_pages((memsz + 0xfff) / 0x1000, vaddr as *mut u64);
+        if status != EfiStatus::Success {
+            output_writer.write_str("Failed to allocate page for elf program.");
+            panic!("Failed to allocate page for elf program.");
+        }
+
+        // allocateした部分にカーネルの内容をコピーする
+        unsafe {
+            core::ptr::copy(
+                (kernel_buffer as usize + offset) as *const u8,
+                vaddr as *mut u8,
+                memsz,
+            );
+        }
     }
-    output_writer.write_str("success allocate page\n");
-    let status = kernel_file.read(
-        &mut kernel_file_size,
-        kernel_base_addr as usize as *mut EfiVoid, // kernel_base_addrを先頭にファイルの中身を展開する。
-    );
-    if status != EfiStatus::Success {
-        output_writer.write_str("Failed to read to base addr\n");
-        panic!("Failed to read to base addr {:?}", status);
-    }
-    output_writer.write_str("success deploy to base addr\n");
+    output_writer.write_str(buf_writer.as_str().unwrap());
+    buf_writer.flush();
+
+    let entry_point_addr = kernel_ehdr.e_entry as usize;
 
     // START: EFIのブートサービスを終了する
     let status = efi_system_table
@@ -352,36 +389,26 @@ pub extern "C" fn efi_main(
     }
     // END
 
-    // エントリーポイントを読み取る(エントリーポイント関数のアドレスは、elfヘッダーの24バイト後に書かれている).
-    // let entry_addr: u64 = unsafe { *((kernel_base_addr + 24) as usize as *mut u64) };
-    let entry_addr: u64 = (kernel_base_addr + 0x120);
-    let header: [u8; 8] = unsafe { core::ptr::read((entry_addr) as *const u8 as *const [u8; 8]) };
-    let _ = write!(buf_writer, "entry address: 0x{entry_addr:X} header: ");
-    for h in header {
-        let _ = write!(buf_writer, "{h:0>2X} ");
-    }
-    let _ = write!(buf_writer, "\n");
-    output_writer.write_str(buf_writer.as_str().expect(""));
+    // エントリーポイントを読み込む
+    let _ = writeln!(buf_writer, "entry address: 0x{entry_point_addr:X}");
+    output_writer.write_str(buf_writer.as_str().unwrap());
     buf_writer.flush();
 
     // エントリーアドレスを関数として実行する
     output_writer.write_str("execute kernel entry point\n");
-    let entry_point: EntryPointType = unsafe { core::mem::transmute(entry_addr) };
+    let entry_point: EntryPointType = unsafe { core::mem::transmute(entry_point_addr) };
     let entry_point_addr = entry_point as usize;
     let _ = writeln!(buf_writer, "{entry_point_addr:X}");
     output_writer.write_str(buf_writer.as_str().expect(""));
     buf_writer.flush();
 
-    let panic_handler_addr = panic as usize;
-    writeln!(
-        buf_writer,
-        "panic handler address: 0x{panic_handler_addr:X}"
+    let _ = entry_point(
+        gop.mode.frame_buffer_base,
+        gop.mode.info.pixels_per_scan_line,
+        gop.mode.info.horizontal_resolution,
+        gop.mode.info.vertical_resolution,
+        gop.mode.info.pixel_format as i32,
     );
-    output_writer.write_str(buf_writer.as_str().expect(""));
-    buf_writer.flush();
-    // entry_point();
-    let kernel_res = entry_point();
-
     output_writer.write_str("ALL DONE.\n");
     loop {}
     EfiStatus::Success
