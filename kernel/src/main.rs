@@ -60,9 +60,10 @@ extern "win64" fn KernelMain(
         }
     }
 
+    let pixel_color = PixelColor { r: 0, g: 255, b: 0 };
+
     for x in 0..200 {
         for y in 0..100 {
-            let pixel_color = PixelColor { r: 0, g: 255, b: 0 };
             match &mut pixel_writer {
                 PixelWriterKind::RGB8(writer) => {
                     writer.write_no_check(x, y, &pixel_color);
@@ -71,6 +72,23 @@ extern "win64" fn KernelMain(
                     writer.write_no_check(x, y, &pixel_color);
                 }
             }
+        }
+    }
+    let color = PixelColor { r: 0, g: 0, b: 0 };
+    match &mut pixel_writer {
+        PixelWriterKind::RGB8(writer) => {
+            writer.write_ascii(50, 50, 65, &color);
+        }
+        PixelWriterKind::BGR8(writer) => {
+            writer.write_ascii(50, 50, 65, &color);
+        }
+    }
+    match &mut pixel_writer {
+        PixelWriterKind::RGB8(writer) => {
+            writer.write_ascii(58, 50, 'A' as u8, &color);
+        }
+        PixelWriterKind::BGR8(writer) => {
+            writer.write_ascii(58, 50, 'A' as u8, &color);
         }
     }
 
