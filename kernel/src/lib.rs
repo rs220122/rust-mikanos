@@ -1,5 +1,7 @@
 #![no_std]
 #![no_main]
 
+pub mod error;
 pub mod font;
-pub mod frame_buffer;
+pub mod graphics;
+pub mod pci;
