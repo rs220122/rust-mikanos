@@ -28,3 +28,5 @@ disk.img
 
 /target
 kernel/kernel.elf
+*.o
+hankaku.bin

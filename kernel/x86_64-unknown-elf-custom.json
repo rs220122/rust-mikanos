@@ -18,7 +18,9 @@
       "-z", "norelro",
       "--image-base", "0x100000",
       "-o", "kernel.elf",
-      "--static"
+      "--static",
+      "hankaku.o",
+      "src/asm/asmfunc.o"
     ]
   }
 }

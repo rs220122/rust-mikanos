@@ -325,12 +325,13 @@ pub extern "C" fn efi_main(
     // プログラムヘッダーの配列を、プログラムヘッダーが書かれている先頭のアドレスから、読み込む。
     // プログラムヘッダの個数は、e_phnum
     let phdr_bytes = size_of::<ElfPhdr>() * kernel_ehdr.e_phnum as usize;
-    let mut phdrs =
-        unsafe { core::slice::from_raw_parts_mut(phdr_addr as *mut ElfPhdr, phdr_bytes) };
+    let mut phdrs = unsafe {
+        core::slice::from_raw_parts_mut(phdr_addr as *mut ElfPhdr, kernel_ehdr.e_phnum as usize)
+    };
 
     // プログラムを読み込む
-    for i in 0..kernel_ehdr.e_phnum {
-        let phdr = phdrs[i as usize];
+    for phdr in phdrs {
+        // let phdr = phdrs[i as usize];
         if phdr.p_type != ElfPhdrType::PtLoad {
             continue;
         }
