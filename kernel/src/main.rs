@@ -1,5 +1,7 @@
 #![no_std]
 #![no_main]
+#![feature(allocator_api)]
+
 use core::arch::asm;
 use core::fmt::Result;
 use core::fmt::Write;
@@ -229,21 +231,75 @@ extern "win64" fn KernelMain(
             let dev = pci::DEVICES[i];
             let vendor_id = pci::read_vendor_id(dev.bus, dev.device, dev.function);
             let class_code = pci::read_class_code(dev.bus, dev.device, dev.function);
+
             writeln!(
                 console,
-                "{}.{}.{}: vend {:04X}, class {:08X} head: {:02X}",
-                dev.bus, dev.device, dev.function, vendor_id, class_code, dev.header_type
-            );
+                "{}.{}.{}: vend {:04X},  {:02X}{:02X}{:02X} head: {:02X}",
+                dev.bus,
+                dev.device,
+                dev.function,
+                vendor_id,
+                dev.class_code.base,
+                dev.class_code.sub,
+                dev.class_code.interface,
+                dev.header_type
+            )
+            .unwrap();
         }
     }
 
     // Intel製を優先してxHCを探す
-    // let mut xhc_dev: *mut pci::Device = core::ptr::null_mut();
-    // unsafe {
-    //     for i in 0..pci::NUM_DEVICES {
-    //         let dev = pci::DEVICES[i];
-    //     }
-    // }
+    let mut xhc_dev: *mut pci::Device = core::ptr::null_mut();
+    unsafe {
+        for i in 0..pci::NUM_DEVICES {
+            let dev = pci::DEVICES[i];
+            // xHCIのクラスコード: base: 0x0c, sub: 0x03, interface: 0x30
+            if dev.class_code.is_match_with_sub_interface(0x0c, 0x03, 0x30) {
+                xhc_dev = &mut pci::DEVICES[i] as *mut pci::Device;
+
+                // vendor_id = 0x8086 == Intel
+                if 0x8086 == pci::read_vendor_id(dev.bus, dev.device, dev.function) {
+                    break;
+                }
+            }
+        }
+
+        if !xhc_dev.is_null() {
+            let xhc_dev = &(*xhc_dev);
+            writeln!(
+                console,
+                "xHC has been found: {} {} {}, vendor_id: 0x{:04X}",
+                xhc_dev.bus,
+                xhc_dev.device,
+                xhc_dev.function,
+                pci::read_vendor_id(xhc_dev.bus, xhc_dev.device, xhc_dev.function)
+            )
+            .unwrap();
+
+            let xhc_bar = pci::read_bar(xhc_dev, 0).unwrap();
+            let xhc_mmio_base = xhc_bar & !0x0f;
+            writeln!(console, "xHC mmio_base =  0x{:0>8X}", xhc_mmio_base);
+        }
+    }
+
+    {
+        extern crate alloc;
+        use alloc::vec::Vec;
+        use kernel::usb::memory::BumpAllocator1K;
+
+        #[derive(Debug)]
+        struct Foo {
+            a: u32,
+            b: u64,
+        }
+
+        let allocator = BumpAllocator1K::new();
+        let mut v: Vec<u8, BumpAllocator1K> =
+            Vec::<u8, BumpAllocator1K>::with_capacity_in(10, allocator);
+        v.push(100);
+        writeln!(console, "boxed: {v:?}");
+    }
+
     loop {
         unsafe {
             asm!("hlt");

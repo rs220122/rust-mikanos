@@ -16,26 +16,64 @@ unsafe extern "C" {
 }
 
 #[derive(Copy, Clone, Default)]
+pub struct ClassCode {
+    pub base: u8,
+    pub sub: u8,
+    pub interface: u8,
+}
+
+impl ClassCode {
+    pub fn is_match(&self, b: u8) -> bool {
+        b == self.base
+    }
+    pub fn is_match_with_sub(&self, b: u8, s: u8) -> bool {
+        self.is_match(b) && s == self.sub
+    }
+    pub fn is_match_with_sub_interface(&self, b: u8, s: u8, i: u8) -> bool {
+        self.is_match(b) && self.is_match_with_sub(b, s) && i == self.interface
+    }
+
+    pub const fn new(base: u8, sub: u8, interface: u8) -> Self {
+        Self {
+            base,
+            sub,
+            interface,
+        }
+    }
+    pub const fn default() -> Self {
+        Self::new(0, 0, 0)
+    }
+}
+
+#[derive(Copy, Clone, Default)]
 #[repr(C)]
 pub struct Device {
     pub bus: u8,
     pub device: u8,
     pub function: u8,
     pub header_type: u8,
+    pub class_code: ClassCode,
 }
 
 impl Device {
-    pub const fn new(bus: u8, device: u8, function: u8, header_type: u8) -> Self {
+    pub const fn new(
+        bus: u8,
+        device: u8,
+        function: u8,
+        header_type: u8,
+        class_code: ClassCode,
+    ) -> Self {
         Self {
             bus,
             device,
             function,
             header_type,
+            class_code,
         }
     }
 
     pub const fn default() -> Self {
-        Self::new(0, 0, 0, 0)
+        Self::new(0, 0, 0, 0, ClassCode::default())
     }
 }
 
@@ -88,13 +126,21 @@ pub fn read_header_type(bus: u8, device: u8, function: u8) -> u8 {
     return (((read_data() >> 16) as u16) & 0xff) as u8;
 }
 
-pub fn read_class_code(bus: u8, device: u8, function: u8) -> u32 {
+pub fn read_class_code(bus: u8, device: u8, function: u8) -> ClassCode {
     // PCIコンフレーション空間のクラスコード(0x0Bh-08h)の4バイト(32bit)
     // 31:24bitがbase_class
     // 23:16bitがsub class 細かいデバイス種別
     // 15:8bitはProgramming Interfaceで、0x20ならUSB2.0(EHCI), 0x30 USB3.0(xHCI)
     write_address(make_address(bus, device, function, 0x08));
-    return read_data();
+    let class_code = read_data();
+    let base = (class_code >> 24) as u8;
+    let sub = (class_code >> 16) as u8;
+    let interface = (class_code >> 8) as u8;
+    ClassCode {
+        base,
+        sub,
+        interface,
+    }
 }
 
 pub fn read_bus_numbers(bus: u8, device: u8, function: u8) -> u32 {
@@ -102,21 +148,50 @@ pub fn read_bus_numbers(bus: u8, device: u8, function: u8) -> u32 {
     return read_data();
 }
 
+fn read_conf_reg(device: *const Device, reg_addr: u8) -> u32 {
+    let device = unsafe { &(*device) };
+    write_address(make_address(
+        device.bus,
+        device.device,
+        device.function,
+        reg_addr,
+    ));
+    return read_data();
+}
+pub fn read_bar(device: *const Device, bar_index: u8) -> Result<u64, Error> {
+    if bar_index >= 6 {
+        return Err(Error::IndexOutOfRange);
+    }
+
+    // PCIコンフィグレーション空間でのBAR{index}の位置を計算する。
+    // BAR (Base Address Register )
+    let bar_address: u8 = 0x10 + 4 * bar_index;
+    let bar = read_conf_reg(device, bar_address);
+
+    // 32bitアドレス
+    if (bar & 4) == 0 {
+        return Ok(bar as u64);
+    }
+    // 64 bit address
+    if bar_index >= 5 {
+        return Err(Error::IndexOutOfRange);
+    }
+    let bar_upper = read_conf_reg(device, bar_address + 4);
+
+    // bar_upperを上位32ビットシフトする。
+    return Ok((bar as u64) | ((bar_upper as u64) << 32));
+}
+
 pub fn is_single_function_device(header_type: u8) -> bool {
     return (header_type & 0x80) == 0;
 }
 
-fn add_device(bus: u8, device: u8, function: u8, header_type: u8) -> Result<(), Error> {
+fn add_device(device: Device) -> Result<(), Error> {
     unsafe {
         if NUM_DEVICES == DEVICES_LEN {
             return Err(Error::Full);
         }
-        DEVICES[NUM_DEVICES] = Device {
-            bus,
-            device,
-            function,
-            header_type,
-        };
+        DEVICES[NUM_DEVICES] = device;
         NUM_DEVICES += 1;
     }
     Ok(())
@@ -124,16 +199,13 @@ fn add_device(bus: u8, device: u8, function: u8, header_type: u8) -> Result<(), 
 
 fn scan_function(bus: u8, device: u8, function: u8) -> Result<(), Error> {
     let header_type = read_header_type(bus, device, function);
-    add_device(bus, device, function, header_type)?;
+    let class_code = read_class_code(bus, device, function);
+    let dev: Device = Device::new(bus, device, function, header_type, class_code);
+    add_device(dev)?;
 
     // もしPCI-PCIブリッジならセカンダリバスに対して、scan_busを実行する。
     // PCI-PCIブリッジかを判定するには、base class, subclassを用いる
-    //
-    let class_code = read_class_code(bus, device, function);
-    let base: u8 = (class_code >> 24) as u8;
-    let sub: u8 = (class_code >> 16) as u8;
-
-    if base == 0x06 && sub == 0x04 {
+    if class_code.is_match_with_sub(0x06, 0x04) {
         let bus_numbers = read_bus_numbers(bus, device, function);
         let secondary_bus: u8 = (bus_numbers >> 8) as u8;
         return scan_bus(secondary_bus);
