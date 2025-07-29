@@ -233,7 +233,6 @@ pub extern "C" fn efi_main(
         output_writer.write_str("Failed to get memory map");
         panic!("Failed to get memory map: {:?}", status);
     }
-    // メモリマップの情報を表示
 
     // ルートディレクトリを取得
     let mut root: *mut EfiFileProtocol = null_mut::<EfiFileProtocol>();
@@ -244,30 +243,6 @@ pub extern "C" fn efi_main(
     }
     let root = unsafe { &*root };
 
-    // memmapファイルを開く
-    let mut memmap_file: *mut EfiFileProtocol = null_mut::<EfiFileProtocol>();
-    let status = get_memmap_file(efi_system_table, root, &mut memmap_file);
-    if status != EfiStatus::Success {
-        output_writer.write_str("Failed to get memory map file");
-        panic!("Failed to get memory map file: {:?}", status);
-    }
-    // memmap_fileをEfiFileProtocolにキャスト
-    let memmap_file = unsafe { &*memmap_file };
-
-    // メモリマップをファイルに書き込む
-    let _ = memmap_file.write_str("Test memory map file\n");
-    write_to_memmap_file(&memmap_file, &memory_map);
-
-    // memmapファイルを閉じる
-    let status = memmap_file.close();
-    if status != EfiStatus::Success {
-        output_writer.write_str("Failed to close memory map file");
-        panic!("Failed to close memory map file: {:?}", status);
-    }
-    output_writer.write_str("Successfully closed memory map file status: ");
-    output_writer.write_str(status.to_string());
-    output_writer.write_str("\n");
-
     // カーネルを展開する
     let mut kernel_file: *mut EfiFileProtocol = null_mut::<EfiFileProtocol>();
     let status = get_kernel_file(efi_system_table, root, &mut kernel_file);
@@ -275,7 +250,7 @@ pub extern "C" fn efi_main(
         output_writer.write_str("Failed to open kernel.elf");
         panic!("Failed to open kernel.elf: {:?}", status);
     }
-    let kernel_file = unsafe { &*memmap_file };
+    let kernel_file = unsafe { &*kernel_file };
 
     // カーネル情報を取得
     let mut file_info_size: usize = size_of::<EfiFileInfo>();
@@ -364,7 +339,30 @@ pub extern "C" fn efi_main(
     output_writer.write_str(buf_writer.as_str().unwrap());
     buf_writer.flush();
 
-    let entry_point_addr = kernel_ehdr.e_entry as usize;
+    // START: memmapファイルを開いて、ファイルに保存する
+    let mut memmap_file: *mut EfiFileProtocol = null_mut::<EfiFileProtocol>();
+    let status = get_memmap_file(efi_system_table, root, &mut memmap_file);
+    if status != EfiStatus::Success {
+        output_writer.write_str("Failed to get memory map file");
+        panic!("Failed to get memory map file: {:?}", status);
+    }
+    // memmap_fileをEfiFileProtocolにキャスト
+    let memmap_file = unsafe { &*memmap_file };
+
+    // メモリマップをファイルに書き込む
+    let _ = memmap_file.write_str("Test memory map file\n");
+    write_to_memmap_file(&memmap_file, &memory_map);
+
+    // memmapファイルを閉じる
+    let status = memmap_file.close();
+    if status != EfiStatus::Success {
+        output_writer.write_str("Failed to close memory map file");
+        panic!("Failed to close memory map file: {:?}", status);
+    }
+    output_writer.write_str("Successfully closed memory map file status: ");
+    output_writer.write_str(status.to_string());
+    output_writer.write_str("\n");
+    // END
 
     // START: EFIのブートサービスを終了する
     let status = efi_system_table
@@ -393,6 +391,7 @@ pub extern "C" fn efi_main(
     // END
 
     // エントリーポイントを読み込む
+    let entry_point_addr = kernel_ehdr.e_entry as usize;
     let _ = writeln!(buf_writer, "entry address: 0x{entry_point_addr:X}");
     output_writer.write_str(buf_writer.as_str().unwrap());
     buf_writer.flush();
